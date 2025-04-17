@@ -1,7 +1,6 @@
 import requests
 import psycopg2  # Biblioteca para PostgreSQL
 
-
 # Configuração da API
 token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJhdWQiOiIxMzIiLCJqdGkiOiI1MTNhMDdhMDdmMmY4OTI5MWUyMzQ5MTVmMDY5ODIyYWZhNjkxZDAwZGQ2YzZiNjVkM2IyMmY1N2QwNzNmZTEzN2NhMjMxZDc1MmQwMTg3YSIsImlhdCI6MTczNzA1Mjk4Ny40MTIwNDgsIm5iZiI6MTczNzA1Mjk4Ny40MTIwNTIsImV4cCI6MTg5NDgxOTM4Ny40MDM0MDcsInN1YiI6IjMxOSIsInNjb3BlcyI6WyIqIl19.UP9ThFiYOvtjr2JOQuu0nSWzroOz6WmWCnfNK4yhU-j_02pcDT1hukXrgV_FnsCqy37kGgAZVXT-uk2TLr8RWxMww4JXtqLDCdH6uSmQvO2uK1HAutxkoJNFDurIjTcfX2RmbQ4_TD0QUc2pyyHZ9lB9C4nOlOvRLkJIOoyGAa3gUlTHgX8GN5x2ZS_2bxrYPy4ioFDMNTwCi5UG_fXbApmVuXvhc35muacC1TVmuExvGQLpliDsZqNNJgZSVZsqdhFQS4ZrqYMz-pkd0_W0AuCSYxjMKyEAjcd6aEQfkLiGfVzI0EJ19e1Yc-vBG1SxC4Iv7FfhL6H9hahMZ-sQK07Ilbt9vD7k-I-93vvHBmlYIT4A4wC9QqH-z-I0hg64JjYsPLBezqmZOUEmcsan30OFZSlSp2iRkgd4iEnvia41KdkllERkoPPu5o4fq8hQ6dfVvGsqSQ0ZdMRWy0ukWTdAvgExFCh3i7Q6hadvdePrSzNUIrESp4tKpTg5qtVtbaseZNz7IkzpuYbk8tJUolNIterF20nc0leBbk2Qx0cjrrw6Cyzu7AElUxG-vALI5FRmR9jsWT_knrSQaWZaRo1tHrCF0yG19odOjS8Scd-97JTzN-gStji6XyDl5fTQV0uljHS3CqyTFDcWl9ZRk3wI5ITjFgYaiVEIkZ7U5p4"
 HEADERS = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
@@ -30,6 +29,23 @@ unidades_api = {
     "Ilha do Governador": 35032,
     "Freguesia": 35033,
     "Recreio dos Bandeirantes": 35034
+}
+
+# 🔹 Mapeamento de siglas das unidades
+siglas_unidades = {
+    "Bento Ribeiro": "BR",
+    "Madureira": "MA",
+    "Santa Cruz": "SC",
+    "Cascadura": "CD",
+    "Taquara": "TQ",
+    "Nilopolis": "NP",
+    "Seropédica": "SP",
+    "Barra da Tijuca": "BT",
+    "Campo Grande": "CG",
+    "Maricá": "MC",
+    "Ilha do Governador": "IG",
+    "Freguesia": "FG",
+    "Recreio dos Bandeirantes": "RB"
 }
 
 # 🔹 Cache para turmas já consultadas
@@ -182,21 +198,33 @@ def processar_alunos():
 
     for unidade_codigo, sit, matricula, nome, turma in alunos:
         unidade_codigo = unidade_codigo.strip().zfill(2)
-        unit_id = unidades_api.get(codigo_para_unidade.get(unidade_codigo))
-        if not unit_id:
+        nome_unidade = codigo_para_unidade.get(unidade_codigo)
+        if not nome_unidade:
             print(f"⚠ Unidade '{unidade_codigo}' não encontrada.")
             continue
+        
+        sigla = siglas_unidades.get(nome_unidade)
+        if not sigla:
+            print(f"⚠ Sigla para unidade '{nome_unidade}' não encontrada.")
+            continue
+        
+        nome_turma_api = f"{sigla} {turma}"
+        unit_id = unidades_api.get(nome_unidade)
+        if not unit_id:
+            print(f"⚠ Unidade '{nome_unidade}' não mapeada para ID da API.")
+            continue
 
-        class_id = turmas_cache.get((unit_id, turma)) or obter_turmas_api(unit_id, turma)
+        class_id = turmas_cache.get((unit_id, nome_turma_api)) or obter_turmas_api(unit_id, nome_turma_api)
         if not class_id:
-            print(f"⚠ Turma {turma} não encontrada para a unidade {unit_id}.")
+            print(f"⚠ Turma '{nome_turma_api}' não encontrada para a unidade {unit_id}.")
             continue
 
         aluno_api = alunos_api_dict.get(str(matricula))  # Busca direta, sem chamadas extras
 
-        if int(sit) in [2, 4] and aluno_api:
-            remover_aluno(aluno_api["id"], aluno_api["name"])
-            alteracoes_feitas = True
+        if int(sit) in [2, 4]:
+            if aluno_api:
+                remover_aluno(aluno_api["id"], aluno_api["name"])
+                alteracoes_feitas = True
         elif not aluno_api:
             inserir_aluno(nome, matricula, class_id)
             alteracoes_feitas = True
