@@ -1,9 +1,20 @@
 import requests
 import psycopg2  # Biblioteca para PostgreSQL
+import logging
+import time
+from datetime import datetime
+
+# Lógica para o nome da tabela
+ANO_SUFIXO = str(datetime.now().year)[2:] 
+TABELA_ALUNOS = f"alunos_{ANO_SUFIXO}_geral"
+# Configurar logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # Configuração da API
-token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJhdWQiOiIxMzIiLCJqdGkiOiI1MTNhMDdhMDdmMmY4OTI5MWUyMzQ5MTVmMDY5ODIyYWZhNjkxZDAwZGQ2YzZiNjVkM2IyMmY1N2QwNzNmZTEzN2NhMjMxZDc1MmQwMTg3YSIsImlhdCI6MTczNzA1Mjk4Ny40MTIwNDgsIm5iZiI6MTczNzA1Mjk4Ny40MTIwNTIsImV4cCI6MTg5NDgxOTM4Ny40MDM0MDcsInN1YiI6IjMxOSIsInNjb3BlcyI6WyIqIl19.UP9ThFiYOvtjr2JOQuu0nSWzroOz6WmWCnfNK4yhU-j_02pcDT1hukXrgV_FnsCqy37kGgAZVXT-uk2TLr8RWxMww4JXtqLDCdH6uSmQvO2uK1HAutxkoJNFDurIjTcfX2RmbQ4_TD0QUc2pyyHZ9lB9C4nOlOvRLkJIOoyGAa3gUlTHgX8GN5x2ZS_2bxrYPy4ioFDMNTwCi5UG_fXbApmVuXvhc35muacC1TVmuExvGQLpliDsZqNNJgZSVZsqdhFQS4ZrqYMz-pkd0_W0AuCSYxjMKyEAjcd6aEQfkLiGfVzI0EJ19e1Yc-vBG1SxC4Iv7FfhL6H9hahMZ-sQK07Ilbt9vD7k-I-93vvHBmlYIT4A4wC9QqH-z-I0hg64JjYsPLBezqmZOUEmcsan30OFZSlSp2iRkgd4iEnvia41KdkllERkoPPu5o4fq8hQ6dfVvGsqSQ0ZdMRWy0ukWTdAvgExFCh3i7Q6hadvdePrSzNUIrESp4tKpTg5qtVtbaseZNz7IkzpuYbk8tJUolNIterF20nc0leBbk2Qx0cjrrw6Cyzu7AElUxG-vALI5FRmR9jsWT_knrSQaWZaRo1tHrCF0yG19odOjS8Scd-97JTzN-gStji6XyDl5fTQV0uljHS3CqyTFDcWl9ZRk3wI5ITjFgYaiVEIkZ7U5p4"
-HEADERS = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+HEADERS = {
+    "Authorization": "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJhdWQiOiIxMzIiLCJqdGkiOiI1MTNhMDdhMDdmMmY4OTI5MWUyMzQ5MTVmMDY5ODIyYWZhNjkxZDAwZGQ2YzZiNjVkM2IyMmY1N2QwNzNmZTEzN2NhMjMxZDc1MmQwMTg3YSIsImlhdCI6MTczNzA1Mjk4Ny40MTIwNDgsIm5iZiI6MTczNzA1Mjk4Ny40MTIwNTIsImV4cCI6MTg5NDgxOTM4Ny40MDM0MDcsInN1YiI6IjMxOSIsInNjb3BlcyI6WyIqIl19.UP9ThFiYOvtjr2JOQuu0nSWzroOz6WmWCnfNK4yhU-j_02pcDT1hukXrgV_FnsCqy37kGgAZVXT-uk2TLr8RWxMww4JXtqLDCdH6uSmQvO2uK1HAutxkoJNFDurIjTcfX2RmbQ4_TD0QUc2pyyHZ9lB9C4nOlOvRLkJIOoyGAa3gUlTHgX8GN5x2ZS_2bxrYPy4ioFDMNTwCi5UG_fXbApmVuXvhc35muacC1TVmuExvGQLpliDsZqNNJgZSVZsqdhFQS4ZrqYMz-pkd0_W0AuCSYxjMKyEAjcd6aEQfkLiGfVzI0EJ19e1Yc-vBG1SxC4Iv7FfhL6H9hahMZ-sQK07Ilbt9vD7k-I-93vvHBmlYIT4A4wC9QqH-z-I0hg64JjYsPLBezqmZOUEmcsan30OFZSlSp2iRkgd4iEnvia41KdkllERkoPPu5o4fq8hQ6dfVvGsqSQ0ZdMRWy0ukWTdAvgExFCh3i7Q6hadvdePrSzNUIrESp4tKpTg5qtVtbaseZNz7IkzpuYbk8tJUolNIterF20nc0leBbk2Qx0cjrrw6Cyzu7AElUxG-vALI5FRmR9jsWT_knrSQaWZaRo1tHrCF0yG19odOjS8Scd-97JTzN-gStji6XyDl5fTQV0uljHS3CqyTFDcWl9ZRk3wI5ITjFgYaiVEIkZ7U5p4",
+    "Accept": "application/json"
+}
 
 # Configuração do banco de dados PostgreSQL
 db_config = {
@@ -14,212 +25,135 @@ db_config = {
     "port": "5432"
 }
 
-# 🔹 Mapeamento manual de unidades e IDs
 unidades_api = {
-    "Bento Ribeiro": 35022,
-    "Madureira": 35023,
-    "Santa Cruz": 35024,
-    "Cascadura": 35025,
-    "Taquara": 35026,
-    "Nilopolis": 35027,
-    "Seropédica": 35028,
-    "Barra da Tijuca": 35029,
-    "Campo Grande": 35030,
-    "Maricá": 35031,
-    "Ilha do Governador": 35032,
-    "Freguesia": 35033,
-    "Recreio dos Bandeirantes": 35034
+    "Bento Ribeiro": 35022, "Madureira": 35023, "Santa Cruz": 35024, "Cascadura": 35025,
+    "Taquara": 35026, "Nilopolis": 35027, "Seropédica": 35028, "Barra da Tijuca": 35029,
+    "Campo Grande": 35030, "Maricá": 35031, "Ilha do Governador": 35032,
+    "Freguesia": 35033, "Recreio dos Bandeirantes": 35034
 }
 
-# 🔹 Mapeamento de siglas das unidades
 siglas_unidades = {
-    "Bento Ribeiro": "BR",
-    "Madureira": "MA",
-    "Santa Cruz": "SC",
-    "Cascadura": "CD",
-    "Taquara": "TQ",
-    "Nilopolis": "NP",
-    "Seropédica": "SP",
-    "Barra da Tijuca": "BT",
-    "Campo Grande": "CG",
-    "Maricá": "MC",
-    "Ilha do Governador": "IG",
-    "Freguesia": "FG",
-    "Recreio dos Bandeirantes": "RB"
+    "Bento Ribeiro": "BR", "Madureira": "MA", "Santa Cruz": "SC", "Cascadura": "CD",
+    "Taquara": "TQ", "Nilopolis": "NP", "Seropédica": "SP", "Barra da Tijuca": "BT",
+    "Campo Grande": "CG", "Maricá": "MC", "Ilha do Governador": "IG",
+    "Freguesia": "FG", "Recreio dos Bandeirantes": "RB"
 }
 
-# 🔹 Cache para turmas já consultadas
+codigo_para_unidade = {
+    "01": "Bento Ribeiro", "02": "Madureira", "03": "Santa Cruz", "04": "Cascadura",
+    "05": "Taquara", "06": "Nilopolis", "09": "Seropédica", "10": "Barra da Tijuca",
+    "11": "Campo Grande", "14": "Maricá", "15": "Ilha do Governador",
+    "16": "Freguesia", "17": "Recreio dos Bandeirantes"
+}
+
 turmas_cache = {}
 
+# 🔹 Turmas API com cache
 def obter_turmas_api(unit_id, nome_turma):
-    if (unit_id, nome_turma) in turmas_cache:
-        return turmas_cache[(unit_id, nome_turma)]  # Retorna do cache sem chamar API
-
-    url = "https://app.redacaonline.com.br/api/classes"
-    response = requests.get(url, headers=HEADERS, params={"name": nome_turma, "unit_id": unit_id})
+    chave = (unit_id, nome_turma)
+    if chave in turmas_cache:
+        return turmas_cache[chave]
 
     try:
-        turmas = response.json()
-        if not isinstance(turmas, list):
-            print(f"⚠ Resposta inesperada da API: {turmas}")
-            return None
-
-        for turma in turmas:
-            if turma["name"] == str(nome_turma):
-                turmas_cache[(unit_id, nome_turma)] = turma["id"]  # Salva no cache
-                return turma["id"]
-
-        print(f"⚠ Turma '{nome_turma}' não encontrada na unidade {unit_id}.")
-        return None
-
+        resp = requests.get(
+            "https://app.redacaonline.com.br/api/classes",
+            headers=HEADERS,
+            params={"name": nome_turma, "unit_id": unit_id},
+            timeout=10
+        )
+        turmas = resp.json()
+        if isinstance(turmas, list):
+            for turma in turmas:
+                if turma["name"] == nome_turma:
+                    turmas_cache[chave] = turma["id"]
+                    return turma["id"]
+        logging.warning(f"Turma '{nome_turma}' não encontrada na unidade {unit_id}.")
     except Exception as e:
-        print(f"Erro ao obter turmas: {e}")
-        return None
+        logging.exception(f"Erro ao buscar turma: {e}")
+    return None
 
-# 🔹 Busca única de todos os alunos na API
+# 🔹 Listar alunos com paginação
 def listar_alunos():
     url = "https://app.redacaonline.com.br/api/students"
     alunos_api = {}
     page = 1
-
     while True:
-        print(f"🔄 Buscando alunos na página {page}...")
-        response = requests.get(url, headers=HEADERS, params={"page": page}, timeout=10)
-        if response.status_code != 200:
-            print(f"Erro ao listar alunos: {response.text}")
-            return {}
-
-        data = response.json()
-        for aluno in data.get("data", []):
-            alunos_api[aluno["external_id"]] = aluno  # Criamos um dicionário {matricula: aluno}
-
-        if "next_page_url" not in data or not data["next_page_url"]:
-            print("✅ Todas as páginas de alunos foram carregadas.")
+        try:
+            resp = requests.get(url, headers=HEADERS, params={"page": page}, timeout=30)
+            if resp.status_code != 200:
+                logging.error(f"Erro ao listar alunos: {resp.text}")
+                break
+            data = resp.json()
+            for aluno in data.get("data", []):
+                alunos_api[aluno["external_id"]] = aluno
+            if not data.get("next_page_url"):
+                break
+            page += 1
+            time.sleep(0.3)
+        except Exception as e:
+            logging.exception(f"Erro na listagem de alunos: {e}")
             break
-        
-        page += 1
-    
     return alunos_api
 
-# Obter aluno na API pelo external_id
-def obter_aluno_api(matricula):
-    alunos = listar_alunos()
-    for aluno in alunos:
-        if aluno["external_id"] == str(matricula):
-            return aluno
-    return None
-
-# Obter student_id pelo nome do aluno
-def obter_student_id(nome_aluno):
-    alunos = listar_alunos()
-    for aluno in alunos:
-        if aluno["name"].lower() == nome_aluno.lower():
-            return aluno["id"]
-    print(f"Aluno '{nome_aluno}' não encontrado.")
-    return None
-
-# Remover aluno
-def remover_aluno(student_id, nome_aluno):
-    if not student_id:
-        print(f"Não foi possível encontrar o aluno {nome_aluno}.")
-        return
-
+# 🔹 CRUD alunos
+def remover_aluno(student_id, nome):
     url = f"https://app.redacaonline.com.br/api/students/{student_id}"
-    response = requests.delete(url, headers=HEADERS)
-
-    if response.status_code == 204:
-        print(f"Aluno {nome_aluno} removido com sucesso!")
+    r = requests.delete(url, headers=HEADERS)
+    if r.status_code == 204:
+        logging.info(f"❌ Removido: {nome}")
     else:
-        print(f"Erro ao remover aluno: {response.status_code} - {response.text}")
+        logging.warning(f"Erro ao remover {nome}: {r.status_code} - {r.text}")
 
-# Atualizar aluno na API
 def atualizar_aluno(student_id, nome, email, class_id, external_id):
     url = f"https://app.redacaonline.com.br/api/students/{student_id}"
-    payload = {
-        "name": nome,
-        "email": email,
-        "class_id": class_id,
-        "external_id": str(external_id)
-    }
-    response = requests.put(url, headers=HEADERS, json=payload)
-
-    if response.status_code == 200:
-        print(f"Aluno {nome} atualizado com sucesso!")
+    payload = {"name": nome, "email": email, "class_id": class_id, "external_id": str(external_id)}
+    r = requests.put(url, headers=HEADERS, json=payload)
+    if r.status_code == 200:
+        logging.info(f"🔄 Atualizado: {nome}")
     else:
-        print(f"Erro ao atualizar aluno: {response.status_code} - {response.text}")
+        logging.warning(f"Erro ao atualizar {nome}: {r.status_code} - {r.text}")
 
-# Inserir aluno na API
 def inserir_aluno(nome, matricula, class_id):
     url = "https://app.redacaonline.com.br/api/students"
     email = f"{matricula}@alunos.smrede.com.br"
     payload = {"name": nome, "email": email, "class_id": class_id, "external_id": str(matricula)}
-    response = requests.post(url, headers=HEADERS, json=payload)
-    
-    if response.status_code == 200:
-        aluno_data = response.json()
-        aluno_id = aluno_data.get("id", "ID não encontrado")
-        print(f"Aluno {nome} inserido com sucesso! ID: {aluno_id}")
-    elif response.status_code == 400:
-        print(f"Erro ao inserir aluno: {response.text}")
+    r = requests.post(url, headers=HEADERS, json=payload)
+    if r.status_code == 200:
+        logging.info(f"✅ Inserido: {nome}")
     else:
-        print(f"Erro inesperado: {response.status_code} - {response.text}")
+        logging.warning(f"Erro ao inserir {nome}: {r.status_code} - {r.text}")
 
-# Mapeamento de código -> nome da unidade
-codigo_para_unidade = {
-    "01": "Bento Ribeiro",
-    "02": "Madureira",
-    "03": "Santa Cruz",
-    "04": "Cascadura",
-    "05": "Taquara",
-    "06": "Nilopolis",
-    "09": "Seropédica",
-    "10": "Barra da Tijuca",
-    "11": "Campo Grande",
-    "14": "Maricá",
-    "15": "Ilha do Governador",
-    "16": "Freguesia",
-    "17": "Recreio dos Bandeirantes"
-}
-
-# 🔹 Processamento otimizado
+# 🔹 Processo principal
 def processar_alunos():
-    conn = psycopg2.connect(**db_config)
-    cursor = conn.cursor()
-    cursor.execute(""" 
-        SELECT unidade, sit, matricula, nome, turma 
-        FROM alunos_25_geral 
-        WHERE turma::NUMERIC >= 11900::NUMERIC
-    """)
-    alunos = cursor.fetchall()
-    conn.close()
-    
-    alunos_api_dict = listar_alunos()  # Obtém todos os alunos uma única vez
+    with psycopg2.connect(**db_config) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(f"""
+                SELECT unidade, sit, matricula, nome, turma
+                FROM {TABELA_ALUNOS}
+                WHERE turma::NUMERIC >= 11900::NUMERIC
+            """)
+            alunos = cursor.fetchall()
+
+    alunos_api_dict = listar_alunos()
     alteracoes_feitas = False
 
-    for unidade_codigo, sit, matricula, nome, turma in alunos:
-        unidade_codigo = unidade_codigo.strip().zfill(2)
-        nome_unidade = codigo_para_unidade.get(unidade_codigo)
+    for unidade_cod, sit, matricula, nome, turma in alunos:
+        unidade_cod = unidade_cod.strip().zfill(2)
+        nome_unidade = codigo_para_unidade.get(unidade_cod)
         if not nome_unidade:
-            print(f"⚠ Unidade '{unidade_codigo}' não encontrada.")
             continue
-        
+
         sigla = siglas_unidades.get(nome_unidade)
-        if not sigla:
-            print(f"⚠ Sigla para unidade '{nome_unidade}' não encontrada.")
-            continue
-        
-        nome_turma_api = f"{sigla} {turma}"
         unit_id = unidades_api.get(nome_unidade)
-        if not unit_id:
-            print(f"⚠ Unidade '{nome_unidade}' não mapeada para ID da API.")
+        if not sigla or not unit_id:
             continue
 
-        class_id = turmas_cache.get((unit_id, nome_turma_api)) or obter_turmas_api(unit_id, nome_turma_api)
+        nome_turma = f"{sigla} {turma}"
+        class_id = obter_turmas_api(unit_id, nome_turma)
         if not class_id:
-            print(f"⚠ Turma '{nome_turma_api}' não encontrada para a unidade {unit_id}.")
             continue
 
-        aluno_api = alunos_api_dict.get(str(matricula))  # Busca direta, sem chamadas extras
+        aluno_api = alunos_api_dict.get(str(matricula))
 
         if int(sit) in [2, 4]:
             if aluno_api:
@@ -233,10 +167,13 @@ def processar_alunos():
             alteracoes_feitas = True
 
     if not alteracoes_feitas:
-        print("✅ Todos os alunos já estão corretos na API. Nenhuma alteração necessária.")
+        logging.info("✅ Todos os alunos já estão corretos na API. Nenhuma alteração necessária.")
     else:
-        print("🔄 Alterações concluídas nos dados da API.")
+        logging.info("🔄 Alterações concluídas com sucesso.")
 
-# Executar
-if __name__ == "__main__":
+# Execução
+def main():
     processar_alunos()
+
+if __name__ == "__main__":
+    main()
