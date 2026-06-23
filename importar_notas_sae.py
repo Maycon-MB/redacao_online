@@ -48,6 +48,19 @@ servidores = {
 # Cache para armazenar temas já buscados
 theme_cache = {}
 
+FUSO_BRASIL = timedelta(hours=3)  # API retorna timestamps em UTC; Brasil é UTC-3 (sem horário de verão)
+
+
+def parse_data_utc_para_local(timestamp_str):
+    """Converte timestamp UTC da API (ex.: '2026-06-23T00:44:45.000000Z') para datetime local (Brasil)."""
+    if not timestamp_str:
+        return None
+    try:
+        dt_utc = datetime.strptime(timestamp_str[:19], '%Y-%m-%dT%H:%M:%S')
+        return dt_utc - FUSO_BRASIL
+    except (ValueError, TypeError):
+        return None
+
 async def test_token(session):
     """Testa se o token é válido."""
     print("Verificando validade do token...", flush=True)
@@ -245,8 +258,8 @@ async def main():
         page = 1
         total_corrected = 0
 
-        print("Iniciando busca de redações (limitado aos últimos 30 dias)...", flush=True)
-        trinta_dias_atras = datetime.now() - timedelta(days=30)
+        print("Iniciando busca de redações (limitado ao último dia)...", flush=True)
+        corte_data = datetime.now() - timedelta(days=1)
         
         while True:
             print(f"Processando página {page}...", flush=True)
@@ -262,14 +275,10 @@ async def main():
                     break
                     
                 first_essay_date_str = data['data'][0].get('updated_at') or data['data'][0].get('created_at')
-                if first_essay_date_str:
-                    try:
-                        dt = datetime.strptime(first_essay_date_str[:10], '%Y-%m-%d')
-                        if dt < trinta_dias_atras:
-                            print("Alcançou redações atualizadas há mais de 30 dias. Finalizando busca.", flush=True)
-                            break
-                    except:
-                        pass
+                dt = parse_data_utc_para_local(first_essay_date_str)
+                if dt and dt < corte_data:
+                    print("Alcançou redações atualizadas há mais de 1 dia. Finalizando busca.", flush=True)
+                    break
 
                 for essay in data['data']:
                     total_corrected += 1
