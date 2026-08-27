@@ -11,7 +11,10 @@ if platform.system() == 'Windows':
 ANO_SUFIXO = str(datetime.now().year)[2:]
 TABELA_ALUNOS = f"alunos_{ANO_SUFIXO}_geral"
 
-base_url = "https://app.redacaonline.com.br/api/essays?limit=100"
+# is_corrected=1: a API ordena por id desc, não por updated_at. Sem esse filtro as
+# redações recém-enviadas (ainda sem correção) ocupam as primeiras páginas e as
+# corrigidas no período ficam páginas adiante.
+base_url = "https://app.redacaonline.com.br/api/essays?limit=100&is_corrected=1"
 theme_text_url = "https://app.redacaonline.com.br/api/themes/texts/{}"
 theme_url = "https://app.redacaonline.com.br/api/themes/{}"
 headers = {
@@ -110,19 +113,27 @@ async def get_theme_name(session, theme_text_id):
         return None
 
 def extract_disciplina_avaliacao(tema):
-    """Extrai disciplina (código numérico) e avaliação do título do tema."""
+    """Extrai disciplina (código numérico) e avaliação do título do tema.
+
+    Retorna (None, None) quando o título não tem o código de 6 caracteres esperado,
+    para que a redação seja ignorada em vez de gravada com dados inválidos.
+    """
     if not tema:
-        return 'Disciplina não disponível', 'Avaliação não disponível'
-    
+        print("[AVISO] Tema não disponível; não é possível extrair disciplina/avaliação.", flush=True)
+        return None, None
+
     try:
         codigo = tema[:6]
+        if len(codigo) < 6:
+            print(f"[AVISO] Título do tema '{tema}' tem menos de 6 caracteres; ignorando.", flush=True)
+            return None, None
         disciplina_codigo = codigo[:3]
         avaliacao = codigo[3:]
         print(f"Disciplina: {disciplina_codigo}, Avaliação: {avaliacao}", flush=True)
         return disciplina_codigo, avaliacao
     except Exception as e:
         print(f"[ERRO] Erro ao extrair disciplina/avaliação de '{tema}': {e}", flush=True)
-        return 'Disciplina não disponível', 'Avaliação não disponível'
+        return None, None
 
 def convert_nota(nota):
     """Converte nota para formato com vírgula."""
@@ -136,16 +147,16 @@ def convert_nota(nota):
 
 def get_aluno_info(matricula):
     f"""Obtém unidade e turma do aluno a partir da tabela {TABELA_ALUNOS}."""
+    conn = None
     try:
         conn = psycopg2.connect(**db_config)
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT unidade, turma 
+            SELECT unidade, turma
             FROM {TABELA_ALUNOS}
             WHERE matricula = %s
         """, (matricula,))
         result = cursor.fetchone()
-        conn.close()
         if result:
             unidade, turma = result
             return unidade.strip().zfill(2), turma
@@ -155,6 +166,9 @@ def get_aluno_info(matricula):
     except Exception as e:
         print(f"[ERRO] Erro ao buscar aluno {matricula}: {e}", flush=True)
         return None, None
+    finally:
+        if conn is not None:
+            conn.close()
 
 def extract_gra_ser(turma):
     """Extrai gra (1º dígito) e ser (3º dígito) da turma."""
@@ -182,31 +196,41 @@ async def grava_nota_db(matricula, disciplina, avaliacao, nota, gra, ser, unidad
     ano = datetime.now().strftime('%y')  # Ex.: "25" para 2025
     dbname = f"sae{unidade}{ano}"
 
+    conn = None
     try:
         conn = psycopg2.connect(**db_config)
         cursor = conn.cursor()
-        
+
         conn_str = f"dbname={dbname} hostaddr={ip} user=postgres password=teste port=5432"
-        inner_query = f"select grava_nota('{matricula}', '{disciplina}', (select avaliacao_id from matriz_avaliacao where gra='{gra}' and ser='{ser}' and sig='{avaliacao}'), '{nota}')"
-        
+        # mogrify escapa os valores; eles vêm da API externa (o título do tema é
+        # editável na plataforma) e não podem ser interpolados direto na query.
+        inner_query = cursor.mogrify(
+            "select grava_nota(%s, %s,"
+            " (select avaliacao_id from matriz_avaliacao"
+            "  where gra=%s and ser=%s and sig=%s), %s)",
+            (matricula, disciplina, gra, ser, avaliacao, nota)
+        ).decode('utf-8')
+
         query = """
-            SELECT dados1.retorno 
+            SELECT dados1.retorno
             FROM dblink(%s, %s) AS dados1(retorno boolean)
         """
         cursor.execute(query, (conn_str, inner_query))
-        
+
         result = cursor.fetchone()
         conn.commit()
-        conn.close()
         if result and result[0]:
             print(f"Nota gravada com sucesso para matrícula {matricula}, disciplina {disciplina}, avaliação {avaliacao}, nota {nota}", flush=True)
             return True
         else:
-            print(f"[ERRO] Falha ao gravar nota para matrícula {matricula}, disciplina {disciplina}, avaliação {-avaliacao}", flush=True)
+            print(f"[ERRO] Falha ao gravar nota para matrícula {matricula}, disciplina {disciplina}, avaliação {avaliacao}", flush=True)
             return False
     except Exception as e:
         print(f"[ERRO] Erro ao gravar nota via dblink para {matricula}: {e}", flush=True)
         return False
+    finally:
+        if conn is not None:
+            conn.close()
 
 async def process_essay(session, essay, total_corrected):
     """Processa uma redação individualmente."""
@@ -225,7 +249,11 @@ async def process_essay(session, essay, total_corrected):
         print("[AVISO] Redação marcada como corrigida, mas array corrections está vazio.", flush=True)
         return None
 
-    nota_bruta = corrections[0].get('grade') or corrections[0].get('nota')
+    # A API preenche 'nota', não 'grade'. O fallback fica por segurança, mas testando
+    # None em vez de truthy: nota 0 é válida (redação zerada) e o 'or' a descartaria.
+    nota_bruta = corrections[0].get('grade')
+    if nota_bruta is None:
+        nota_bruta = corrections[0].get('nota')
     if nota_bruta is None:
         print("[AVISO] Nota não encontrada nos dados de correção.", flush=True)
         return None
@@ -236,6 +264,9 @@ async def process_essay(session, essay, total_corrected):
 
     tema = await get_theme_name(session, theme_text_id) if theme_text_id else None
     disciplina, avaliacao = extract_disciplina_avaliacao(tema)
+    if not (disciplina and avaliacao):
+        print(f"[AVISO] Redação da matrícula {matricula} sem disciplina/avaliação válidas, ignorando.", flush=True)
+        return None
 
     unidade, turma = get_aluno_info(matricula)
     if not (unidade and turma):
@@ -257,8 +288,10 @@ async def main():
 
         page = 1
         total_corrected = 0
+        paginas_sem_recentes = 0
+        MAX_PAGINAS_SEM_RECENTES = 3
 
-        print("Iniciando busca de redações (limitado ao último dia)...", flush=True)
+        print("Iniciando busca de redações corrigidas (limitado ao último dia)...", flush=True)
         corte_data = datetime.now() - timedelta(days=1)
         
         while True:
@@ -274,13 +307,30 @@ async def main():
                     print("Nenhum dado encontrado na página. Finalizando busca.", flush=True)
                     break
                     
-                first_essay_date_str = data['data'][0].get('updated_at') or data['data'][0].get('created_at')
-                dt = parse_data_utc_para_local(first_essay_date_str)
-                if dt and dt < corte_data:
-                    print("Alcançou redações atualizadas há mais de 1 dia. Finalizando busca.", flush=True)
-                    break
-
+                # Filtra por redação, não pela primeira da página: a API ordena por
+                # id desc e updated_at só acompanha aproximadamente, então uma página
+                # pode conter itens mais novos que o fim da página anterior.
+                recentes = []
                 for essay in data['data']:
+                    date_str = essay.get('updated_at') or essay.get('created_at')
+                    dt = parse_data_utc_para_local(date_str)
+                    if dt is None or dt >= corte_data:
+                        recentes.append(essay)
+
+                if recentes:
+                    paginas_sem_recentes = 0
+                else:
+                    # Só desiste depois de várias páginas seguidas sem nada recente,
+                    # para absorver a oscilação de updated_at dentro da ordenação por id.
+                    paginas_sem_recentes += 1
+                    print(f"Página {page} sem redações recentes ({paginas_sem_recentes}/{MAX_PAGINAS_SEM_RECENTES}).", flush=True)
+                    if paginas_sem_recentes >= MAX_PAGINAS_SEM_RECENTES:
+                        print("Alcançou redações atualizadas há mais de 1 dia. Finalizando busca.", flush=True)
+                        break
+
+                for essay in recentes:
+                    if not (essay.get('is_corrected') and essay.get('corrections')):
+                        continue
                     total_corrected += 1
                     # Processa sequencialmente para evitar sobrecarregar o banco de dados com muitas conexões simultâneas
                     await process_essay(session, essay, total_corrected)
