@@ -50,9 +50,12 @@ def valida(reg):
 
 def grava(cur, reg, nota):
     """Grava uma nota via dblink. Retorna o valor booleano devolvido pela função."""
+    # os quatro parâmetros de grava_nota são character varying; passar
+    # avaliacao_id como int não casa com a assinatura
     inner = cur.mogrify(
         "select grava_nota(%s, %s, %s, %s)",
-        (reg['matricula'], reg['disciplina'], int(reg['avaliacao_id']), nota)
+        (str(reg['matricula']), str(reg['disciplina']),
+         str(reg['avaliacao_id']), str(nota))
     ).decode('utf-8')
     cur.execute(
         "SELECT d.retorno FROM dblink(%s, %s) AS d(retorno boolean)",
@@ -73,7 +76,7 @@ def confere(cur, regs_gravados):
 
     for (unidade, ano), itens in sorted(por_destino.items()):
         mats = sorted({str(r['matricula']) for r, _ in itens})
-        aids = sorted({int(r['avaliacao_id']) for r, _ in itens})
+        aids = sorted({str(r['avaliacao_id']) for r, _ in itens})
         inner = cur.mogrify(
             "select mat::text, dis::text, avaliacao_id::text, nota::text"
             " from nota where mat = any(%s) and avaliacao_id = any(%s)",
@@ -108,6 +111,8 @@ def main():
     ap.add_argument('--unidade', help='processa apenas esta unidade (ex.: 09)')
     ap.add_argument('--ano', help='processa apenas este ano letivo (25 ou 26)')
     ap.add_argument('--limite', type=int, help='processa no máximo N registros')
+    ap.add_argument('--registro', default='gravadas_log.json',
+                    help='arquivo onde registrar o que foi gravado (para rollback)')
     args = ap.parse_args()
 
     with open(args.json, encoding='utf-8') as f:
@@ -173,7 +178,16 @@ def main():
         print(f"\nchamadas ok: {len(gravados)} | falhas: {len(falhas)}")
         for r, motivo in falhas[:10]:
             print(f"  FALHA {r['matricula']}: {motivo}")
+
+        # Registra as chaves gravadas para viabilizar rollback preciso. Sem isso
+        # seria preciso inferir o que foi escrito a partir de data/usuario.
         if gravados:
+            with open(args.registro, 'w', encoding='utf-8') as f:
+                json.dump([{'matricula': r['matricula'], 'unidade': r['unidade'],
+                            'ano': r['ano'], 'disciplina': r['disciplina'],
+                            'avaliacao_id': r['avaliacao_id'], 'nota': nota}
+                           for r, nota in gravados], f, ensure_ascii=False)
+            print(f"registro para rollback: {args.registro} ({len(gravados)})")
             confere(cur, gravados)
     finally:
         conn.close()
