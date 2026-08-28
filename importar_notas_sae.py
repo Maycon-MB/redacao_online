@@ -69,6 +69,29 @@ def parse_data_utc_para_local(timestamp_str):
     except (ValueError, TypeError):
         return None
 
+async def busca_json(session, url, tentativas=4):
+    """GET com retry. Devolve o JSON ou None se esgotar as tentativas.
+
+    A API é lenta e oscila (páginas já levaram de 4s a 2min). Sem retry, um único
+    timeout derrubava a execução inteira e as redações ainda não processadas
+    ficavam de fora até a próxima rodada.
+    """
+    for tentativa in range(1, tentativas + 1):
+        try:
+            async with session.get(url, headers=headers) as response:
+                if response.status == 200:
+                    return await response.json()
+                corpo = (await response.text())[:200]
+                print(f"[AVISO] HTTP {response.status} em {url} "
+                      f"(tentativa {tentativa}/{tentativas}): {corpo}", flush=True)
+        except Exception as e:
+            print(f"[AVISO] {type(e).__name__} em {url} "
+                  f"(tentativa {tentativa}/{tentativas})", flush=True)
+        if tentativa < tentativas:
+            await asyncio.sleep(5 * tentativa)  # espera crescente
+    return None
+
+
 async def test_token(session):
     """Testa se o token é válido."""
     print("Verificando validade do token...", flush=True)
@@ -92,27 +115,23 @@ async def get_theme_name(session, theme_text_id):
 
     print(f"Buscando tema para theme_text_id {theme_text_id}...", flush=True)
     try:
-        url = theme_text_url.format(theme_text_id)
-        async with session.get(url, headers=headers) as response:
-            if response.status != 200:
-                print(f"[ERRO] Falha ao buscar texto motivador {theme_text_id}: {response.status} - {await response.text()}", flush=True)
-                return None
-            text_data = await response.json()
-            theme_id = text_data.get('theme_id')
-            if not theme_id:
-                print(f"[ERRO] theme_id não encontrado no texto motivador {theme_text_id}: {json.dumps(text_data, indent=2)}", flush=True)
-                return None
+        text_data = await busca_json(session, theme_text_url.format(theme_text_id))
+        if text_data is None:
+            print(f"[ERRO] Falha ao buscar texto motivador {theme_text_id}.", flush=True)
+            return None
+        theme_id = text_data.get('theme_id')
+        if not theme_id:
+            print(f"[ERRO] theme_id não encontrado no texto motivador {theme_text_id}: {json.dumps(text_data, indent=2)}", flush=True)
+            return None
 
-        url = theme_url.format(theme_id)
-        async with session.get(url, headers=headers) as response:
-            if response.status != 200:
-                print(f"[ERRO] Falha ao buscar tema {theme_id}: {response.status} - {await response.text()}", flush=True)
-                return None
-            theme_data = await response.json()
-            theme_title = theme_data.get('title', None)
-            theme_cache[theme_text_id] = theme_title
-            print(f"Tema encontrado: {theme_title}", flush=True)
-            return theme_title
+        theme_data = await busca_json(session, theme_url.format(theme_id))
+        if theme_data is None:
+            print(f"[ERRO] Falha ao buscar tema {theme_id}.", flush=True)
+            return None
+        theme_title = theme_data.get('title', None)
+        theme_cache[theme_text_id] = theme_title
+        print(f"Tema encontrado: {theme_title}", flush=True)
+        return theme_title
     except Exception as e:
         print(f"[ERRO] Erro ao buscar tema para theme_text_id {theme_text_id}: {e}", flush=True)
         return None
@@ -316,7 +335,10 @@ async def process_essay(session, essay, total_corrected):
         print(f"[AVISO] Falha ao gravar nota para matrícula {matricula}.", flush=True)
 
 async def main():
-    async with aiohttp.ClientSession() as session:
+    # sem timeout explícito o aiohttp usa 5 min por requisição; com a varredura
+    # mais funda, uma página lenta derrubava a execução inteira
+    tempo_limite = aiohttp.ClientTimeout(total=120)
+    async with aiohttp.ClientSession(timeout=tempo_limite) as session:
         if not await test_token(session):
             print("[ERRO] Token inválido ou sem permissão. Insira um token válido no campo 'Authorization'.", flush=True)
             return
@@ -336,54 +358,54 @@ async def main():
         while True:
             print(f"Processando página {page}...", flush=True)
             url = f"{base_url}&page={page}"
-            async with session.get(url, headers=headers) as response:
-                if response.status != 200:
-                    print(f"[ERRO] Falha na página {page}: {response.status} - {await response.text()}", flush=True)
-                    break
+            data = await busca_json(session, url)
+            if data is None:
+                print(f"[ERRO] Página {page} não pôde ser lida. Interrompendo a varredura; "
+                      f"a próxima execução recomeça do início.", flush=True)
+                break
 
-                data = await response.json()
-                if not data.get('data'):
-                    print("Nenhum dado encontrado na página. Finalizando busca.", flush=True)
-                    break
-                    
-                # Filtra por redação, não pela primeira da página: a API ordena por
-                # id desc e updated_at só acompanha aproximadamente, então uma página
-                # pode conter itens mais novos que o fim da página anterior.
-                recentes = []
-                for essay in data['data']:
-                    date_str = essay.get('updated_at') or essay.get('created_at')
-                    dt = parse_data_utc_para_local(date_str)
-                    if dt is None or dt >= corte_data:
-                        recentes.append(essay)
+            if not data.get('data'):
+                print("Nenhum dado encontrado na página. Finalizando busca.", flush=True)
+                break
 
-                # Parada pelo campo que ordena de fato (created_at): quando a
-                # redação mais nova da página já é mais antiga que o horizonte,
-                # nada além dela pode estar dentro dele.
-                criacoes = [parse_data_utc_para_local(e.get('created_at'))
-                            for e in data['data']]
-                criacoes = [c for c in criacoes if c is not None]
-                mais_nova = max(criacoes) if criacoes else None
+            # Filtra por redação, não pela primeira da página: a API ordena por
+            # id desc e updated_at só acompanha aproximadamente, então uma página
+            # pode conter itens mais novos que o fim da página anterior.
+            recentes = []
+            for essay in data['data']:
+                date_str = essay.get('updated_at') or essay.get('created_at')
+                dt = parse_data_utc_para_local(date_str)
+                if dt is None or dt >= corte_data:
+                    recentes.append(essay)
 
-                if recentes:
-                    print(f"Página {page}: {len(recentes)} recentes.", flush=True)
+            # Parada pelo campo que ordena de fato (created_at): quando a
+            # redação mais nova da página já é mais antiga que o horizonte,
+            # nada além dela pode estar dentro dele.
+            criacoes = [parse_data_utc_para_local(e.get('created_at'))
+                        for e in data['data']]
+            criacoes = [c for c in criacoes if c is not None]
+            mais_nova = max(criacoes) if criacoes else None
 
-                if mais_nova is not None and mais_nova < corte_criacao:
-                    print(f"Página {page} só tem redações criadas antes do horizonte "
-                          f"({mais_nova:%d/%m}). Finalizando busca.", flush=True)
-                    break
+            if recentes:
+                print(f"Página {page}: {len(recentes)} recentes.", flush=True)
 
-                for essay in recentes:
-                    if not (essay.get('is_corrected') and essay.get('corrections')):
-                        continue
-                    total_corrected += 1
-                    # Processa sequencialmente para evitar sobrecarregar o banco de dados com muitas conexões simultâneas
-                    await process_essay(session, essay, total_corrected)
+            if mais_nova is not None and mais_nova < corte_criacao:
+                print(f"Página {page} só tem redações criadas antes do horizonte "
+                      f"({mais_nova:%d/%m}). Finalizando busca.", flush=True)
+                break
 
-                pagination = data.get('pagination', {})
-                if page >= pagination.get('last_page', 1):
-                    print("Última página alcançada.", flush=True)
-                    break
-                page += 1
+            for essay in recentes:
+                if not (essay.get('is_corrected') and essay.get('corrections')):
+                    continue
+                total_corrected += 1
+                # Processa sequencialmente para evitar sobrecarregar o banco de dados com muitas conexões simultâneas
+                await process_essay(session, essay, total_corrected)
+
+            pagination = data.get('pagination', {})
+            if page >= pagination.get('last_page', 1):
+                print("Última página alcançada.", flush=True)
+                break
+            page += 1
 
         print(f"Total de redações corrigidas: {total_corrected}", flush=True)
         descarta_conexao()
