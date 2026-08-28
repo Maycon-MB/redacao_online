@@ -145,30 +145,61 @@ def convert_nota(nota):
     except (ValueError, TypeError):
         return nota
 
+_conexao = None
+
+
+def get_conexao():
+    """Conexão única, reusada por toda a execução.
+
+    Antes abria-se uma conexão por consulta — duas por redação — o que esgotava
+    o max_connections do servidor em dias de volume alto ("sorry, too many
+    clients already"). Em autocommit para que um erro não deixe transação
+    abortada envenenando as chamadas seguintes.
+    """
+    global _conexao
+    if _conexao is not None and _conexao.closed == 0:
+        return _conexao
+    _conexao = psycopg2.connect(**db_config)
+    _conexao.autocommit = True
+    return _conexao
+
+
+def descarta_conexao():
+    """Fecha a conexão atual para que a próxima chamada reabra."""
+    global _conexao
+    if _conexao is not None:
+        try:
+            _conexao.close()
+        except Exception:
+            pass
+    _conexao = None
+
+
 def get_aluno_info(matricula):
     f"""Obtém unidade e turma do aluno a partir da tabela {TABELA_ALUNOS}."""
-    conn = None
     try:
-        conn = psycopg2.connect(**db_config)
-        cursor = conn.cursor()
+        cursor = get_conexao().cursor()
         cursor.execute(f"""
             SELECT unidade, turma
             FROM {TABELA_ALUNOS}
             WHERE matricula = %s
         """, (matricula,))
         result = cursor.fetchone()
+        cursor.close()
         if result:
             unidade, turma = result
             return unidade.strip().zfill(2), turma
         else:
             print(f"[ERRO] Aluno com matrícula {matricula} não encontrado na tabela {TABELA_ALUNOS}.", flush=True)
             return None, None
+    except psycopg2.OperationalError as e:
+        # conexão caiu: descarta para que a próxima chamada reabra
+        descarta_conexao()
+        print(f"[ERRO] Conexão perdida ao buscar aluno {matricula}: {e}", flush=True)
+        return None, None
     except Exception as e:
         print(f"[ERRO] Erro ao buscar aluno {matricula}: {e}", flush=True)
         return None, None
-    finally:
-        if conn is not None:
-            conn.close()
 
 def extract_gra_ser(turma):
     """Extrai gra (1º dígito) e ser (3º dígito) da turma."""
@@ -196,10 +227,8 @@ async def grava_nota_db(matricula, disciplina, avaliacao, nota, gra, ser, unidad
     ano = datetime.now().strftime('%y')  # Ex.: "25" para 2025
     dbname = f"sae{unidade}{ano}"
 
-    conn = None
     try:
-        conn = psycopg2.connect(**db_config)
-        cursor = conn.cursor()
+        cursor = get_conexao().cursor()
 
         conn_str = f"dbname={dbname} hostaddr={ip} user=postgres password=teste port=5432"
         # mogrify escapa os valores; eles vêm da API externa (o título do tema é
@@ -218,19 +247,20 @@ async def grava_nota_db(matricula, disciplina, avaliacao, nota, gra, ser, unidad
         cursor.execute(query, (conn_str, inner_query))
 
         result = cursor.fetchone()
-        conn.commit()
+        cursor.close()
         if result and result[0]:
             print(f"Nota gravada com sucesso para matrícula {matricula}, disciplina {disciplina}, avaliação {avaliacao}, nota {nota}", flush=True)
             return True
         else:
             print(f"[ERRO] Falha ao gravar nota para matrícula {matricula}, disciplina {disciplina}, avaliação {avaliacao}", flush=True)
             return False
+    except psycopg2.OperationalError as e:
+        descarta_conexao()
+        print(f"[ERRO] Conexão perdida ao gravar nota para {matricula}: {e}", flush=True)
+        return False
     except Exception as e:
         print(f"[ERRO] Erro ao gravar nota via dblink para {matricula}: {e}", flush=True)
         return False
-    finally:
-        if conn is not None:
-            conn.close()
 
 async def process_essay(session, essay, total_corrected):
     """Processa uma redação individualmente."""
@@ -342,9 +372,13 @@ async def main():
                 page += 1
 
         print(f"Total de redações corrigidas: {total_corrected}", flush=True)
+        descarta_conexao()
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except Exception as e:
         print(f"[ERRO] Erro inesperado: {e}", flush=True)
+    finally:
+        # garante que a conexão não fique pendurada se o script abortar
+        descarta_conexao()
