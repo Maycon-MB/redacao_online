@@ -53,6 +53,11 @@ theme_cache = {}
 
 FUSO_BRASIL = timedelta(hours=3)  # API retorna timestamps em UTC; Brasil é UTC-3 (sem horário de verão)
 
+# Até que idade de criação vasculhar. Uma redação criada há semanas pode ser
+# corrigida hoje, e a API a devolve na posição do id dela, não no topo. Cobre
+# recorreção e correção atrasada; aumentar se aparecerem notas antigas faltando.
+DIAS_HORIZONTE = 45
+
 
 def parse_data_utc_para_local(timestamp_str):
     """Converte timestamp UTC da API (ex.: '2026-06-23T00:44:45.000000Z') para datetime local (Brasil)."""
@@ -318,11 +323,15 @@ async def main():
 
         page = 1
         total_corrected = 0
-        paginas_sem_recentes = 0
-        MAX_PAGINAS_SEM_RECENTES = 3
 
         print("Iniciando busca de redações corrigidas (limitado ao último dia)...", flush=True)
         corte_data = datetime.now() - timedelta(days=1)
+        # A API ordena por id/created_at desc, então a varredura só pode parar com
+        # base em created_at. Parar por "N páginas sem nada recente" não funciona:
+        # redação antiga corrigida hoje aparece na posição do id dela, muitas
+        # páginas adiante, com lacunas de páginas vazias no meio.
+        corte_criacao = datetime.now() - timedelta(days=DIAS_HORIZONTE)
+        print(f"Varrendo redações criadas nos últimos {DIAS_HORIZONTE} dias.", flush=True)
         
         while True:
             print(f"Processando página {page}...", flush=True)
@@ -347,16 +356,21 @@ async def main():
                     if dt is None or dt >= corte_data:
                         recentes.append(essay)
 
+                # Parada pelo campo que ordena de fato (created_at): quando a
+                # redação mais nova da página já é mais antiga que o horizonte,
+                # nada além dela pode estar dentro dele.
+                criacoes = [parse_data_utc_para_local(e.get('created_at'))
+                            for e in data['data']]
+                criacoes = [c for c in criacoes if c is not None]
+                mais_nova = max(criacoes) if criacoes else None
+
                 if recentes:
-                    paginas_sem_recentes = 0
-                else:
-                    # Só desiste depois de várias páginas seguidas sem nada recente,
-                    # para absorver a oscilação de updated_at dentro da ordenação por id.
-                    paginas_sem_recentes += 1
-                    print(f"Página {page} sem redações recentes ({paginas_sem_recentes}/{MAX_PAGINAS_SEM_RECENTES}).", flush=True)
-                    if paginas_sem_recentes >= MAX_PAGINAS_SEM_RECENTES:
-                        print("Alcançou redações atualizadas há mais de 1 dia. Finalizando busca.", flush=True)
-                        break
+                    print(f"Página {page}: {len(recentes)} recentes.", flush=True)
+
+                if mais_nova is not None and mais_nova < corte_criacao:
+                    print(f"Página {page} só tem redações criadas antes do horizonte "
+                          f"({mais_nova:%d/%m}). Finalizando busca.", flush=True)
+                    break
 
                 for essay in recentes:
                     if not (essay.get('is_corrected') and essay.get('corrections')):
